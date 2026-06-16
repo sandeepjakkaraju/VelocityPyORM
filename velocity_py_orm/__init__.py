@@ -4,8 +4,8 @@ from .decorators import entity, table, Column, id, generated_value, encrypted
 from .orm import VelocityPyORM
 from .dialect import Dialect, PostgresDialect, MySQLDialect, SQLiteDialect
 from .repository import Repository, BaseRepository
-from .query import Query, Direction
-from .cache import CacheProvider, SimpleCacheProvider
+from .query import Query, Direction, Placeholder, PrecompiledQuery
+from .cache import CacheProvider, SimpleCacheProvider, RedisCacheProvider
 from .security import EncryptionService
 from .tx import transaction, transactional
 
@@ -25,8 +25,11 @@ __all__ = [
     'BaseRepository',
     'Query',
     'Direction',
+    'Placeholder',
+    'PrecompiledQuery',
     'CacheProvider',
     'SimpleCacheProvider',
+    'RedisCacheProvider',
     'EncryptionService',
     'transaction',
     'transactional',

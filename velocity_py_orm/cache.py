@@ -55,3 +55,46 @@ class SimpleCacheProvider(CacheProvider):
 
     def clear(self, cache_name: str):
         self._store[cache_name].clear()
+
+
+class RedisCacheProvider(CacheProvider):
+    def __init__(self, redis_client=None, host="localhost", port=6379, db=0, password=None, ssl=False):
+        if redis_client is not None:
+            self.client = redis_client
+        else:
+            import redis
+            self.client = redis.Redis(host=host, port=port, db=db, password=password, ssl=ssl)
+
+    def _get_key(self, cache_name: str, key) -> str:
+        return f"velocity_cache:{cache_name}:{key}"
+
+    def put(self, cache_name: str, key, value):
+        import pickle
+        serialized = pickle.dumps(value)
+        self.client.set(self._get_key(cache_name, key), serialized)
+
+    def get(self, cache_name: str, key):
+        import pickle
+        data = self.client.get(self._get_key(cache_name, key))
+        if data is not None:
+            try:
+                return pickle.loads(data)
+            except Exception:
+                try:
+                    return int(data)
+                except ValueError:
+                    try:
+                        return data.decode('utf-8')
+                    except Exception:
+                        return data
+        return None
+
+    def evict(self, cache_name: str, key):
+        self.client.delete(self._get_key(cache_name, key))
+
+    def clear(self, cache_name: str):
+        pattern = f"velocity_cache:{cache_name}:*"
+        keys = self.client.keys(pattern)
+        if keys:
+            self.client.delete(*keys)
+

@@ -21,7 +21,7 @@ class Order:
 
 
 class Query:
-    def __init__(self, meta, dialect, session, encryption_service=None, owns_session=False):
+    def __init__(self, meta, dialect, session, encryption_service=None, owns_session=False, cache_provider=None):
         self.meta = meta
         self.dialect = dialect
         self.session = session
@@ -33,6 +33,15 @@ class Query:
         self.offset_val = None
         self.current_property = None
         self.is_and = True
+        self._use_cache = False
+        self._cache_ttl = None
+        self._cache_provider = cache_provider or (getattr(session, 'orm', None) and session.orm.get_cache_provider())
+
+    def use_cache(self, enabled=True, ttl=None):
+        self._use_cache = enabled
+        self._cache_ttl = ttl
+        return self
+
 
     def where(self, property_or_name):
         if isinstance(property_or_name, Column):
@@ -131,6 +140,17 @@ class Query:
         return self
 
     def list(self) -> list:
+        if self._use_cache and self._cache_provider:
+            version = self._cache_provider.get("sys_table_versions", self.meta.table_name) or 1
+            sql, params = self._build_select_sql()
+            cache_key = f"v{version}:{sql}:{params}"
+            cached = self._cache_provider.get(f"query_cache:{self.meta.table_name}", cache_key)
+            if cached is not None:
+                for entity in cached:
+                    id_val = getattr(entity, self.meta.id_column.field_name)
+                    self.session.l1_cache.put(self.meta.entity_class, id_val, entity)
+                return list(cached)
+
         sql, params = self._build_select_sql()
         results = []
         cur = self.session.connection.cursor()
@@ -143,6 +163,9 @@ class Query:
                 id_val = getattr(entity, self.meta.id_column.field_name)
                 self.session.l1_cache.put(self.meta.entity_class, id_val, entity)
                 results.append(entity)
+
+            if self._use_cache and self._cache_provider:
+                self._cache_provider.put(f"query_cache:{self.meta.table_name}", cache_key, results)
         finally:
             cur.close()
             if self.owns_session:
@@ -151,6 +174,7 @@ class Query:
                 except Exception:
                     pass
         return results
+
 
     def one(self):
         self.limit(1)
@@ -236,3 +260,100 @@ class Query:
                     val = self.encryption_service.decrypt(val)
                 setattr(entity, col.field_name, val)
         return entity
+
+
+class DummySession:
+    def __init__(self, orm):
+        self.orm = orm
+        self.connection = None
+
+
+class Placeholder:
+    def __init__(self, name=None):
+        self.name = name
+
+
+class PrecompiledQuery:
+    def __init__(self, orm, table_or_entity, sql, param_mappings):
+        self.orm = orm
+        self.table_or_entity = table_or_entity
+        self.sql = sql
+        self.param_mappings = param_mappings
+        if isinstance(table_or_entity, str):
+            self.table_name = table_or_entity
+            self.entity_class = None
+            self.meta = orm.get_meta_for_table(table_or_entity)
+        else:
+            self.entity_class = table_or_entity
+            self.meta = getattr(table_or_entity, '_meta', None)
+            self.table_name = self.meta.table_name if self.meta else table_or_entity.__name__.lower() + "s"
+
+    def _bind_params(self, *args, **kwargs):
+        params = []
+        for mapping in self.param_mappings:
+            if isinstance(mapping, int):
+                if mapping < len(args):
+                    params.append(args[mapping])
+                else:
+                    raise ValueError(f"Missing required positional argument at index {mapping}")
+            else:
+                if mapping in kwargs:
+                    params.append(kwargs[mapping])
+                elif len(args) == len(self.param_mappings):
+                    params.append(args[self.param_mappings.index(mapping)])
+                else:
+                    raise ValueError(f"Missing required argument {mapping}")
+        return tuple(params)
+
+    def execute(self, tx, *args, **kwargs):
+        from .tx import map_dict_to_class
+        params = self._bind_params(*args, **kwargs)
+        cur = tx.connection.cursor()
+        try:
+            cur.execute(self.sql, params)
+            colnames = [desc[0] for desc in cur.description] if cur.description else []
+            rows = cur.fetchall()
+            results = []
+            for row in rows:
+                record = {}
+                for idx, colname in enumerate(colnames):
+                    val = row[idx]
+                    if self.meta:
+                        col = self.meta.get_column_by_db_name(colname)
+                        if col and col.encrypted and val is not None and self.orm.get_encryption_service() is not None:
+                            val = self.orm.get_encryption_service().encrypt(str(val))
+                    record[colname] = val
+                
+                if self.entity_class:
+                    record = map_dict_to_class(record, self.entity_class)
+                results.append(record)
+            return results
+        finally:
+            cur.close()
+
+    async def execute_async(self, tx, *args, **kwargs):
+        from .tx import map_dict_to_class
+        params = self._bind_params(*args, **kwargs)
+        cur = await tx.connection.cursor()
+        try:
+            await cur.execute(self.sql, params)
+            colnames = [desc[0] for desc in cur.description] if cur.description else []
+            rows = await cur.fetchall()
+            results = []
+            for row in rows:
+                record = {}
+                for idx, colname in enumerate(colnames):
+                    val = row[idx]
+                    if self.meta:
+                        col = self.meta.get_column_by_db_name(colname)
+                        if col and col.encrypted and val is not None and self.orm.get_encryption_service() is not None:
+                            val = self.orm.get_encryption_service().encrypt(str(val))
+                    record[colname] = val
+                
+                if self.entity_class:
+                    record = map_dict_to_class(record, self.entity_class)
+                results.append(record)
+            return results
+        finally:
+            await cur.close()
+

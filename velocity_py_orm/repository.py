@@ -45,11 +45,16 @@ class BaseRepository(Repository):
         self.l2_cache = orm.get_cache_provider()
         self.encryption = orm.get_encryption_service()
 
+    def _invalidate_query_cache(self):
+        if self.l2_cache:
+            version = self.l2_cache.get("sys_table_versions", self.meta.table_name) or 1
+            self.l2_cache.put("sys_table_versions", self.meta.table_name, version + 1)
+
     def _get_session(self):
         session = SessionContext.get_current_session()
         if session is None:
             conn = self.orm.get_connection()
-            session = Session(conn)
+            session = Session(conn, orm=self.orm)
             SessionContext.set_current_session(session)
             return session, True
         return session, False
@@ -147,6 +152,7 @@ class BaseRepository(Repository):
             session.l1_cache.put(self.meta.entity_class, id_val, entity)
             if self.l2_cache:
                 self.l2_cache.put(self.meta.table_name, id_val, entity)
+            self._invalidate_query_cache()
             return entity
         finally:
             cur.close()
@@ -196,6 +202,7 @@ class BaseRepository(Repository):
             session.l1_cache.put(self.meta.entity_class, id_val, entity)
             if self.l2_cache:
                 self.l2_cache.put(self.meta.table_name, id_val, entity)
+            self._invalidate_query_cache()
             return entity
         finally:
             cur.close()
@@ -223,6 +230,7 @@ class BaseRepository(Repository):
             session.l1_cache.remove(self.meta.entity_class, id_val)
             if self.l2_cache:
                 self.l2_cache.evict(self.meta.table_name, id_val)
+            self._invalidate_query_cache()
         except Exception as e:
             if created_new:
                 try:
@@ -343,6 +351,7 @@ class BaseRepository(Repository):
                 
                 cur.executemany(sql, params_list)
 
+            self._invalidate_query_cache()
             if created_new:
                 conn.commit()
         except Exception as e:
@@ -386,6 +395,7 @@ class BaseRepository(Repository):
                     params_list.append(tuple(params))
 
             cur.executemany(sql, params_list)
+            self._invalidate_query_cache()
             if created_new:
                 conn.commit()
         except Exception as e:
