@@ -1,4 +1,4 @@
-# VelocityPyORM
+# VelocityPyORM  (..|o|..)
 
 A parallel Python ORM matching the architecture, patterns, and design of Java **VelocityORM** as closely as possible.
 
